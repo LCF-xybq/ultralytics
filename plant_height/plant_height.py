@@ -126,12 +126,13 @@ def inference(weight, data_dir, json_dir, device, imgsz, max_det):
 # ---------------------------------------------------------------------------
 # Step 2: Point correction (optional)
 # ---------------------------------------------------------------------------
-def point_correct(data_dir, json_dir, max_workers, kernel_size):
+def point_correct(data_dir, json_dir, max_workers, kernel_size, clean_dir=""):
     rescale_dir = json_dir + "_rescale"
     ruler_dir = json_dir + "_ruler"
     gradient_dir = json_dir + "_gradient"
     cycle_dir = json_dir + "_gradient_cycle"
     restored_dir = json_dir + "_restored"
+    inter_dirs = [rescale_dir, ruler_dir, gradient_dir, cycle_dir, restored_dir]
 
     try:
         print("  2a. Transform points to ruler coords")
@@ -168,9 +169,17 @@ def point_correct(data_dir, json_dir, max_workers, kernel_size):
         print("[Point Correct] Done. JSONs updated.")
 
     finally:
-        for d in [rescale_dir, ruler_dir, gradient_dir, cycle_dir, restored_dir]:
-            if osp.exists(d):
-                shutil.rmtree(d, ignore_errors=True)
+        if clean_dir:
+            clean_dir = osp.abspath(clean_dir)
+            os.makedirs(clean_dir, exist_ok=True)
+            for d in inter_dirs:
+                if osp.exists(d):
+                    shutil.move(d, osp.join(clean_dir, osp.basename(d)))
+            print(f"[Point Correct] Intermediate dirs saved to {clean_dir}")
+        else:
+            for d in inter_dirs:
+                if osp.exists(d):
+                    shutil.rmtree(d, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +298,7 @@ def main():
     parser.add_argument("--max_det", type=int, default=10)
     parser.add_argument("--max_workers", type=int, default=8)
     parser.add_argument("--kernel_size", type=int, default=3)
+    parser.add_argument("--clean", type=str, default="", help="Save intermediate dirs to this path instead of deleting (default: delete)")
     args = parser.parse_args()
 
     data_dir = osp.abspath(args.data)
@@ -302,11 +312,11 @@ def main():
     inference(args.weight, data_dir, json_dir, args.device, args.imgsz, args.max_det)
 
     # Step 2 (optional)
-    if args.point_correct:
+    if args.point_correct or args.clean:
         print("\n" + "=" * 60)
         print("Step 2 / 4  Point Correction")
         print("=" * 60)
-        point_correct(data_dir, json_dir, args.max_workers, args.kernel_size)
+        point_correct(data_dir, json_dir, args.max_workers, args.kernel_size, args.clean)
 
     # Step 3
     print("\n" + "=" * 60)

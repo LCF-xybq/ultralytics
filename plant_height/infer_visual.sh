@@ -6,7 +6,8 @@
 python plant_height.py --weight ../runs/plant_height_yolov8/weights/best.pt \
     --data ../../data/plant_height/images/test/ \
     --save_json ../runs/plant_height_yolov8/test_results/labels_raw \
-    --save_img ../runs/plant_height_yolov8/test_results/images_raw
+    --save_img ../runs/plant_height_yolov8/test_results/images_raw \
+    --clean ../runs/plant_height_yolov8/test_results/gradient
 
 sleep 1
 

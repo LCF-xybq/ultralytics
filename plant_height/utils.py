@@ -514,6 +514,7 @@ def _nearest_one(task: tuple[str, str, str, str]):
         return False, img_name, "skip missing json"
 
     labels = _load_json(json_path)
+    os.makedirs(save_dir, exist_ok=True)
 
     pts_map = {}
     for shp in labels.get("shapes", []):
@@ -553,6 +554,20 @@ def _nearest_one(task: tuple[str, str, str, str]):
     centroid_up_left = centroid_if_triangle_else_fallback(pts_map["up_left"], pts_up_left[0], pts_up_left[1])
     centroid_up_right = centroid_if_triangle_else_fallback(pts_map["up_right"], pts_up_right[0], pts_up_right[1])
     centroid_down_left = centroid_if_triangle_else_fallback(pts_map["down_left"], pts_down_left[0], pts_down_left[1])
+
+    # Draw on gradient image: blue=before, red=after
+    vis = bgr.copy()
+    corrected = {
+        "up_left": centroid_up_left,
+        "up_right": centroid_up_right,
+        "down_left": centroid_down_left,
+    }
+    for label_name, orig in pts_map.items():
+        corr = corrected[label_name]
+        cv2.circle(vis, orig, 5, (255, 0, 0), -1)  # blue = before
+        cv2.circle(vis, corr, 5, (0, 0, 255), -1)  # red = after
+        cv2.line(vis, orig, corr, (0, 255, 0), 1)   # green line connecting
+    cv2.imwrite(osp.join(save_dir, img_name), vis)
 
     update_point_in_labels(labels, "up_left", centroid_up_left)
     update_point_in_labels(labels, "up_right", centroid_up_right)
