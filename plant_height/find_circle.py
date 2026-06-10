@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 
+
 def find_and_draw_largest_empty_circle(image_path):
     # 1. 读取图像并确保是单通道灰度图
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
@@ -56,11 +57,9 @@ def find_and_draw_largest_empty_circle(image_path):
     # 8. 返回绘制了圆形的结果图像
     return vis_img
 
-# 运行示例
-# 假设你的文件名为 'input_image.png'
-# result_img = find_and_draw_largest_empty_circle('/home/lcf/projects/yolo/ultralytics/runs/plant_height_yolov8/test_results/gradient/labels_raw_gradient/DJI_20250830090542_0025_V.jpeg')
-result_img = find_and_draw_largest_empty_circle('/home/lcf/projects/yolo/ultralytics/runs/plant_height_yolov8/test_results/gradient/labels_raw_gradient_cycle/DJI_20260323152451_0002_V.jpeg')
+# result_img = find_and_draw_largest_empty_circle('../runs/plant_height_yolov8/test_results/gradient/labels_raw_gradient/DJI_20250830090542_0025_V.jpeg')
+result_img = find_and_draw_largest_empty_circle('../runs/plant_height_yolov8/test_results/gradient/labels_raw_gradient_cycle/DJI_20260323152451_0002_V.jpeg')
 if result_img is not None:
     # 保存结果
-    cv2.imwrite('result_with_circle2.png', result_img)
+    cv2.imwrite('result_with_circle.png', result_img)
     print("结果图像已保存为 'result_with_circle.png'")

@@ -612,74 +612,85 @@ def _refine_one(task: tuple[str, str, str, str]):
     mag = np.sqrt(gx**2 + gy**2)
     h, w = mag.shape
 
-    search_radius = 8
-    max_blend = 0.3
+    search_radius = 20
+    max_blend = 0.5
 
-    def _refine_point(center, radius, max_bl, min_blend=0.03):
+    def _compute_target(center, radius):
+        """Compute gradient-weighted centroid target, return None if unreliable."""
         cx, cy = center
         r = int(radius)
 
         if cx < 0 or cy < 0 or cx >= w or cy >= h:
-            return center
+            return None
 
         y_lo = max(0, int(cy) - r)
         y_hi = min(h, int(cy) + r + 1)
         x_lo = max(0, int(cx) - r)
         x_hi = min(w, int(cx) + r + 1)
         if y_hi <= y_lo or x_hi <= x_lo:
-            return center
+            return None
 
         local_mag = mag[y_lo:y_hi, x_lo:x_hi]
         local_max = float(local_mag.max())
         if local_max < 1e-10:
-            return center
+            return None
 
         kx = min(max(int(round(cx)), 0), w - 1)
         ky = min(max(int(round(cy)), 0), h - 1)
         edge_ratio = float(mag[ky, kx]) / local_max
-        deficit = max(0.0, 1.0 - edge_ratio)
-        blend = max_bl * deficit * deficit
-        if blend < min_blend:
-            return center
+
+        # Only refine if point is NOT already on a strong edge
+        if edge_ratio > 0.7:
+            return None
 
         yy, xx = np.mgrid[y_lo:y_hi, x_lo:x_hi]
-        sigma = 1.0
+        sigma = 3.0
         gauss = np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * sigma**2))
 
-        thresh = np.percentile(local_mag, 80)
+        thresh = np.percentile(local_mag, 60)
         mask = local_mag >= thresh
 
         weights = local_mag * gauss * mask
         total_w = weights.sum()
         if total_w < 1e-10:
-            return center
+            return None
 
         new_x = float((weights * xx).sum() / total_w)
         new_y = float((weights * yy).sum() / total_w)
-        return (cx * (1 - blend) + new_x * blend, cy * (1 - blend) + new_y * blend)
 
-    corrected = {}
+        # Consistency: target must have higher gradient
+        nkx = min(max(int(round(new_x)), 0), w - 1)
+        nky = min(max(int(round(new_y)), 0), h - 1)
+        if float(mag[nky, nkx]) / local_max < edge_ratio:
+            return None
+
+        return (new_x, new_y, edge_ratio)
+
+    # Compute targets for all 3 points
+    targets = {}
     for label_name in ("up_left", "up_right", "down_left"):
-        corrected[label_name] = _refine_point(pts_map[label_name], search_radius, max_blend)
+        result = _compute_target(pts_map[label_name], search_radius)
+        targets[label_name] = result  # None means skip
 
-    # For down_left: skip correction if displacement is too small (likely noise)
-    dl_disp = math.sqrt(
-        (corrected["down_left"][0] - pts_map["down_left"][0]) ** 2
-        + (corrected["down_left"][1] - pts_map["down_left"][1]) ** 2
-    )
-    if dl_disp < 0.3:
-        corrected["down_left"] = pts_map["down_left"]
-
-    # Clamp individual keypoint displacement to limit outlier corrections
-    max_allowed = 0.5
-    for k in corrected:
-        ox, oy = pts_map[k]
-        cx, cy = corrected[k]
-        dx, dy = cx - ox, cy - oy
-        dist = math.sqrt(dx**2 + dy**2)
-        if dist > max_allowed:
-            scale = max_allowed / dist
-            corrected[k] = (ox + dx * scale, oy + dy * scale)
+    # All-or-nothing: if not all 3 points have valid targets, skip all
+    if any(v is None for v in targets.values()):
+        corrected = dict(pts_map)
+    else:
+        corrected = {}
+        for label_name in ("up_left", "up_right", "down_left"):
+            cx, cy = pts_map[label_name]
+            new_x, new_y, edge_ratio = targets[label_name]
+            deficit = 1.0 - edge_ratio
+            blend = max_blend * deficit
+            dx = new_x - cx
+            dy = new_y - cy
+            disp = math.sqrt(dx * dx + dy * dy)
+            # Cap displacement at 8px
+            if disp > 0.1:
+                scale = min(1.0, 8.0 / disp)
+                corrected[label_name] = (cx + dx * blend * scale, cy + dy * blend * scale)
+            else:
+                corrected[label_name] = (cx, cy)
 
     # Visualisation: gradient magnitude with blue=before, red=after points
     mag_norm = np.clip(mag / (mag.max() + 1e-10) * 255, 0, 255).astype(np.uint8)
