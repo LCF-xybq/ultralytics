@@ -40,6 +40,7 @@ from ultralytics.nn.modules import (
     CBFuse,
     CBLinear,
     Classify,
+    ColorContrastAttention,
     Concat,
     Conv,
     Conv2,
@@ -67,6 +68,7 @@ from ultralytics.nn.modules import (
     Segment,
     Segment26,
     SemanticSegment,
+    TinyTargetAttention,
     TorchVision,
     WorldDetect,
     YOLOEDetect,
@@ -1708,6 +1710,8 @@ def parse_model(d, ch, verbose=True):
             SCDown,
             C2fCIB,
             A2C2f,
+            ColorContrastAttention,
+            TinyTargetAttention,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments

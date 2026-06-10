@@ -2071,3 +2071,117 @@ class RealNVP(nn.Module):
             self.float()
         z, log_det = self.backward_p(x)
         return self.prior.log_prob(z) + log_det
+
+
+class ColorContrastAttention(nn.Module):
+    """Color Contrast Attention for enhancing objects with distinct appearance from surroundings.
+
+    Designed for scenarios where targets (e.g., colored rulers) have strong visual contrast
+    against homogeneous backgrounds (e.g., green plant fields). Computes multi-scale local-vs-surround
+    contrast to generate spatial attention, combined with channel recalibration.
+
+    Args:
+        c1 (int): Input channels.
+        c2 (int): Output channels.
+        reduction (int): Channel reduction ratio for bottleneck layers.
+
+    Examples:
+        >>> m = ColorContrastAttention(256, 256)
+        >>> x = torch.randn(1, 256, 40, 40)
+        >>> print(m(x).shape)
+        torch.Size([1, 256, 40, 40])
+    """
+
+    def __init__(self, c1: int, c2: int, reduction: int = 16):
+        super().__init__()
+        self.conv = Conv(c1, c2, 1)
+        mid = max(c2 // reduction, 16)
+
+        # Local feature (small receptive field - captures precise object region)
+        self.local_conv = DWConv(c2, c2, 3)
+
+        # Surround context (large receptive field via dilation - captures background)
+        self.surround_conv = nn.Sequential(
+            DWConv(c2, c2, 3, d=2),
+            DWConv(c2, c2, 3, d=4),
+        )
+
+        # Fuse local and surround difference into spatial attention map
+        self.spatial_gate = nn.Sequential(
+            Conv(c2 * 2, mid, 1),
+            Conv(mid, 1, 1, act=False),
+            nn.Sigmoid(),
+        )
+
+        # Channel recalibration based on global contrast statistics
+        self.channel_gate = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(c2, mid, 1),
+            nn.SiLU(),
+            nn.Conv2d(mid, c2, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.conv(x)
+        local_feat = self.local_conv(x)
+        surround_feat = self.surround_conv(x)
+        contrast = torch.cat([local_feat, surround_feat], dim=1)
+        spatial_w = self.spatial_gate(contrast)
+        channel_w = self.channel_gate(x)
+        return x * spatial_w * channel_w
+
+
+class TinyTargetAttention(nn.Module):
+    """Tiny Target Attention for detecting extremely small spatial features (e.g., leaf tips).
+
+    Uses a center-surround saliency mechanism: computes fine-grained center response and broader
+    surround context, then highlights spatial locations where the center strongly differs from the
+    surround. This amplifies small salient peaks that standard attention tends to smooth out.
+
+    Args:
+        c1 (int): Input channels.
+        c2 (int): Output channels.
+        reduction (int): Channel reduction ratio for bottleneck layers.
+
+    Examples:
+        >>> m = TinyTargetAttention(256, 256)
+        >>> x = torch.randn(1, 256, 80, 80)
+        >>> print(m(x).shape)
+        torch.Size([1, 256, 80, 80])
+    """
+
+    def __init__(self, c1: int, c2: int, reduction: int = 16):
+        super().__init__()
+        self.conv = Conv(c1, c2, 1)
+        mid = max(c2 // reduction, 16)
+
+        # Center response: fine-grained local features (3x3)
+        self.center = nn.Sequential(
+            DWConv(c2, mid, 3),
+            Conv(mid, mid, 1),
+        )
+
+        # Surround response: broader context (3x3 dilated)
+        self.surround = nn.Sequential(
+            DWConv(c2, mid, 3, d=3),
+            Conv(mid, mid, 1),
+        )
+
+        # Saliency map from center-surround difference
+        self.saliency = nn.Sequential(
+            Conv(mid * 2, mid, 1),
+            Conv(mid, 1, 1, act=False),
+            nn.Sigmoid(),
+        )
+
+        # Feature refinement with residual
+        self.refine = Conv(c2, c2, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.conv(x)
+        center = self.center(x)
+        surround = self.surround(x)
+        diff = center - surround
+        saliency_map = self.saliency(torch.cat([center, diff], dim=1))
+        return self.refine(x * saliency_map) + x
