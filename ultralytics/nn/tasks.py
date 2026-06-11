@@ -53,6 +53,7 @@ from ultralytics.nn.modules import (
     GhostConv,
     HGBlock,
     HGStem,
+    HPModule,
     ImagePoolingAttn,
     Index,
     LRPCHead,
@@ -1711,6 +1712,7 @@ def parse_model(d, ch, verbose=True):
             C2fCIB,
             A2C2f,
             ColorContrastAttention,
+            HPModule,
             TinyTargetAttention,
         }
     )

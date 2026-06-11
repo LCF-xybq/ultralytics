@@ -2073,6 +2073,108 @@ class RealNVP(nn.Module):
         return self.prior.log_prob(z) + log_det
 
 
+class HPModule(nn.Module):
+    """High-Pass Filter Module for enhancing tiny target features in frequency domain.
+
+    Suppresses low-frequency background via DCT high-pass filtering, then applies channel
+    and spatial attention on the clean high-frequency response to amplify small target signals.
+
+    Args:
+        c1 (int): Input channels.
+        c2 (int): Output channels.
+        kernel_size (int): Kernel size for the final convolution. Default is 3.
+
+    Examples:
+        >>> m = HPModule(64, 32)
+        >>> x = torch.randn(1, 64, 40, 40)
+        >>> print(m(x).shape)
+        torch.Size([1, 32, 40, 40])
+    """
+
+    def __init__(self, c1: int, c2: int, kernel_size: int = 3):
+        super().__init__()
+        self.c2 = c2
+        self.alpha = nn.Parameter(torch.tensor(0.25))
+
+        # Input projection
+        self.input_proj = Conv(c1, c2, 1)
+
+        # --- Channel Path (CP) ---
+        pool_size = min(16, max(1, min(c2, 16)))
+        self.gap = nn.AdaptiveAvgPool2d(pool_size)
+        self.gmp = nn.AdaptiveMaxPool2d(pool_size)
+        groups = max(1, c2 // 4)
+        self.cp_conv1 = nn.Conv2d(c2, c2, 1, groups=groups)
+        self.cp_conv2 = nn.Conv2d(c2, c2, 1, groups=groups)
+        self.cp_fc = nn.Conv2d(c2 * 2, c2, 1, groups=groups)
+
+        # --- Spatial Path (SP) ---
+        self.sp_conv = nn.Conv2d(c2, 1, 1)
+
+        # --- Fusion ---
+        pad = kernel_size // 2
+        self.fuse_conv = nn.Sequential(
+            nn.Conv2d(c2, c2, kernel_size, padding=pad, bias=False),
+            nn.BatchNorm2d(c2),
+            nn.SiLU(),
+        )
+
+    def _high_pass_filter(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply DCT-based high-pass filter to extract high-frequency features."""
+        B, C, H, W = x.shape
+        # orig_dtype = x.dtype
+        # x = x.float()  # cuFFT requires fp32 for non-power-of-2 sizes
+
+        # DCT via FFT: real FFT -> inverse FFT along each spatial dim
+        x = torch.fft.irfft(torch.fft.rfft(x, dim=2, norm="ortho"), n=H, dim=2, norm="ortho")
+        x = torch.fft.irfft(torch.fft.rfft(x, dim=3, norm="ortho"), n=W, dim=3, norm="ortho")
+
+        # Soft high-pass mask: smooth transition controlled by learnable alpha
+        coords_h = torch.arange(H, device=x.device, dtype=x.dtype).unsqueeze(1)
+        coords_w = torch.arange(W, device=x.device, dtype=x.dtype).unsqueeze(0)
+        alpha = self.alpha.clamp(0.01, 0.5)
+        mask = torch.sigmoid((coords_h - alpha * H) * 6.0) * torch.sigmoid((coords_w - alpha * W) * 6.0)
+        x = x * mask.unsqueeze(0).unsqueeze(0)
+        # return x.to(orig_dtype)
+        return x
+
+    def _channel_path(self, f: torch.Tensor) -> torch.Tensor:
+        """Channel attention computed on high-frequency features."""
+        # Pool to k x k instead of 1 x 1 to preserve spatial detail
+        f_gap = self.gap(f).sum(dim=(2, 3))  # (B, C)
+        f_gmp = self.gmp(f).sum(dim=(2, 3))  # (B, C)
+
+        # Apply ReLU to keep positive responses
+        f_gap = F.relu(f_gap).unsqueeze(-1).unsqueeze(-1)  # (B, C, 1, 1)
+        f_gmp = F.relu(f_gmp).unsqueeze(-1).unsqueeze(-1)
+
+        s_gap = self.cp_conv1(f_gap).squeeze(-1).squeeze(-1)  # (B, C)
+        s_gmp = self.cp_conv2(f_gmp).squeeze(-1).squeeze(-1)
+
+        s = torch.cat([s_gap, s_gmp], dim=1).unsqueeze(-1).unsqueeze(-1)  # (B, 2C, 1, 1)
+        u_cp = torch.sigmoid(self.cp_fc(s))  # (B, C, 1, 1)
+        return u_cp
+
+    def _spatial_path(self, f: torch.Tensor) -> torch.Tensor:
+        """Spatial attention mask from high-frequency features."""
+        u_sp = torch.sigmoid(self.sp_conv(f))  # (B, 1, H, W)
+        return u_sp
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        c = self.input_proj(x)  # (B, C2, H, W)
+
+        # High-frequency response
+        f = self._high_pass_filter(c)
+
+        # Channel & spatial attention
+        u_cp = self._channel_path(f)  # (B, C2, 1, 1)
+        u_sp = self._spatial_path(f)  # (B, 1, H, W)
+
+        # Fuse: broadcast multiply then sum, finally refine with conv
+        out = c * u_cp + c * u_sp
+        return self.fuse_conv(out)
+
+
 class ColorContrastAttention(nn.Module):
     """Color Contrast Attention for enhancing objects with distinct appearance from surroundings.
 

@@ -1,9 +1,9 @@
 #!/bin/bash
 
 
-python train_v1.py
+# python train_v1.py
 
-sleep 10
+# sleep 10
 
 python train_yolov8.py
 
