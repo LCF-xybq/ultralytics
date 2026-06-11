@@ -1,0 +1,58 @@
+nc: 1
+names: ['ruler']
+
+nkpt: 4
+kpt_shape: [4, 3]
+kpt_names: ['up_left', 'up_right', 'down_left', 'tip']
+
+skeleton:
+  - [0, 1]
+  - [0, 2]
+  - [2, 3]
+  - [1, 3]
+
+scales:
+  # s: [0.50, 0.50, 1024]
+  m: [0.50, 1.00, 512]
+
+# YOLOv8 backbone + HPModule (v2: after C2f only, no first-layer HPModule, no neck HPModule)
+# Key changes from v1:
+#   1. Removed HPModule from position 0 (raw image) - destructive to low-freq info
+#   2. HPModule placed AFTER C2f blocks, not before - enhances extracted features
+#   3. Removed HPModule from neck - preserves rich fused features for keypoint head
+#   4. Neck skip connections tap directly from C2f outputs - bypass HPModule filtering
+backbone:
+  # [from, repeats, module, args]
+  - [-1, 1, Conv, [64, 3, 2]]          # 0-P1/2
+  - [-1, 1, Conv, [128, 3, 2]]         # 1-P2/4
+  - [-1, 3, C2f, [128, True]]          # 2
+  - [-1, 1, Conv, [256, 3, 2]]         # 3-P3/8
+  - [-1, 6, C2f, [256, True]]          # 4 (neck P3 skip source)
+  - [-1, 1, HPModule, [256, 3]]        # 5 HPModule after C2f @ P3
+  - [-1, 1, Conv, [512, 3, 2]]         # 6-P4/16
+  - [-1, 6, C2f, [512, True]]          # 7 (neck P4 skip source)
+  - [-1, 1, HPModule, [512, 3]]        # 8 HPModule after C2f @ P4
+  - [-1, 1, Conv, [1024, 3, 2]]        # 9-P5/32
+  - [-1, 3, C2f, [1024, True]]         # 10
+  - [-1, 1, HPModule, [1024, 3]]       # 11 HPModule after C2f @ P5
+  - [-1, 1, SPPF, [1024, 5]]           # 12
+
+# YOLOv8 head (no HPModule in neck)
+head:
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]  # 13
+  - [[-1, 7], 1, Concat, [1]]          # 14 cat from C2f P4 (layer 7, raw features)
+  - [-1, 3, C2f, [512]]                # 15
+
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]  # 16
+  - [[-1, 4], 1, Concat, [1]]          # 17 cat from C2f P3 (layer 4, raw features)
+  - [-1, 3, C2f, [256]]                # 18
+
+  - [-1, 1, Conv, [256, 3, 2]]         # 19
+  - [[-1, 15], 1, Concat, [1]]         # 20
+  - [-1, 3, C2f, [512]]                # 21
+
+  - [-1, 1, Conv, [512, 3, 2]]         # 22
+  - [[-1, 12], 1, Concat, [1]]         # 23
+  - [-1, 3, C2f, [1024]]               # 24
+
+  - [[18, 21, 24], 1, Pose, [nc, kpt_shape]]  # Pose(P3, P4, P5)

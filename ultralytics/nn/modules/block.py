@@ -2094,7 +2094,7 @@ class HPModule(nn.Module):
     def __init__(self, c1: int, c2: int, kernel_size: int = 3):
         super().__init__()
         self.c2 = c2
-        self.alpha = nn.Parameter(torch.tensor(0.25))
+        self.alpha = nn.Parameter(torch.tensor(0.1))
 
         # Input projection
         self.input_proj = Conv(c1, c2, 1)
@@ -2120,23 +2120,18 @@ class HPModule(nn.Module):
         )
 
     def _high_pass_filter(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply DCT-based high-pass filter to extract high-frequency features."""
-        B, C, H, W = x.shape
-        # orig_dtype = x.dtype
-        # x = x.float()  # cuFFT requires fp32 for non-power-of-2 sizes
-
-        # DCT via FFT: real FFT -> inverse FFT along each spatial dim
-        x = torch.fft.irfft(torch.fft.rfft(x, dim=2, norm="ortho"), n=H, dim=2, norm="ortho")
-        x = torch.fft.irfft(torch.fft.rfft(x, dim=3, norm="ortho"), n=W, dim=3, norm="ortho")
-
-        # Soft high-pass mask: smooth transition controlled by learnable alpha
-        coords_h = torch.arange(H, device=x.device, dtype=x.dtype).unsqueeze(1)
-        coords_w = torch.arange(W, device=x.device, dtype=x.dtype).unsqueeze(0)
-        alpha = self.alpha.clamp(0.01, 0.5)
-        mask = torch.sigmoid((coords_h - alpha * H) * 6.0) * torch.sigmoid((coords_w - alpha * W) * 6.0)
-        x = x * mask.unsqueeze(0).unsqueeze(0)
-        # return x.to(orig_dtype)
-        return x
+        """Apply learnable high-pass convolution to extract high-frequency features."""
+        # Learnable Laplacian-style kernel: identity + alpha * laplacian
+        # alpha controls high-pass strength (clamped to [0, 1])
+        alpha = self.alpha.clamp(0.0, 1.0)
+        identity = x
+        laplacian = x - 0.25 * (
+            F.pad(x[:, :, :-1, :], [0, 0, 1, 0])
+            + F.pad(x[:, :, 1:, :], [0, 0, 0, 1])
+            + F.pad(x[:, :, :, :-1], [1, 0, 0, 0])
+            + F.pad(x[:, :, :, 1:], [0, 1, 0, 0])
+        )
+        return identity + alpha * (laplacian - identity)
 
     def _channel_path(self, f: torch.Tensor) -> torch.Tensor:
         """Channel attention computed on high-frequency features."""
@@ -2170,9 +2165,9 @@ class HPModule(nn.Module):
         u_cp = self._channel_path(f)  # (B, C2, 1, 1)
         u_sp = self._spatial_path(f)  # (B, 1, H, W)
 
-        # Fuse: broadcast multiply then sum, finally refine with conv
+        # Fuse: broadcast multiply then sum, refine with conv, then residual add
         out = c * u_cp + c * u_sp
-        return self.fuse_conv(out)
+        return c + self.fuse_conv(out)
 
 
 class ColorContrastAttention(nn.Module):

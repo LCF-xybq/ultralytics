@@ -17,6 +17,5 @@ results = model.train(
     name="v1_hpmodule_26",
     lr0=0.01,
     lrf=0.01,
-    project=workspace,
-    amp=False
+    project=workspace
 )
