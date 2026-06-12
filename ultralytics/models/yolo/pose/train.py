@@ -54,6 +54,14 @@ class PoseTrainer(yolo.detect.DetectionTrainer):
             overrides = {}
         overrides["task"] = "pose"
         super().__init__(cfg, overrides, _callbacks)
+        self.add_callback("on_train_epoch_start", self._set_criterion_epoch)
+
+    def _set_criterion_epoch(self, trainer):
+        """Pass current epoch to the criterion for epoch-based warmup scheduling."""
+        model = unwrap_model(trainer.model)
+        criterion = getattr(model, "criterion", None)
+        if criterion is not None and hasattr(criterion, "current_epoch"):
+            criterion.current_epoch = trainer.epoch
 
     def get_model(
         self,

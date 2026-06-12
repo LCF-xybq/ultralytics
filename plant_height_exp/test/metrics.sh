@@ -14,14 +14,14 @@
 
 # v8
 python metrics.py \
-    --input ../../runs_none_pretrain/v1_contrast_v8/test_results_v3/labels_raw \
+    --input ../../runs_none_pretrain/yolov8_height_loss/test_results_v3/labels_raw \
     --label ../../../data/plant_height/labels/test_json \
-    --save ../../runs_none_pretrain/v1_contrast_v8/test_results_v3/raw_yolo.csv
+    --save ../../runs_none_pretrain/yolov8_height_loss/test_results_v3/raw_yolo.csv
 
 python metrics.py \
-    --input ../../runs_none_pretrain/v1_contrast_v8/test_results_v3/labels_point_correct \
+    --input ../../runs_none_pretrain/yolov8_height_loss/test_results_v3/labels_point_correct \
     --label ../../../data/plant_height/labels/test_json \
-    --save ../../runs_none_pretrain/v1_contrast_v8/test_results_v3/point_correct_yolo.csv
+    --save ../../runs_none_pretrain/yolov8_height_loss/test_results_v3/point_correct_yolo.csv
 
 # 11
 python metrics.py \

@@ -802,7 +802,7 @@ class PlantHeightLoss(v8PoseLoss):
 
     def __init__(self, model: torch.nn.Module, tal_topk: int = 10, tal_topk2: int = 10):
         super().__init__(model, tal_topk, tal_topk2)
-        self.step_count = 0
+        self.current_epoch = 0
 
     def loss(self, preds: dict[str, torch.Tensor], batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         pred_kpts = preds["kpts"].permute(0, 2, 1).contiguous()
@@ -826,10 +826,10 @@ class PlantHeightLoss(v8PoseLoss):
                 fg_mask, target_gt_idx, keypoints, batch["batch_idx"].view(-1, 1), stride_tensor, target_bboxes, pred_kpts
             )
 
-            # Height score loss with warmup (skip for first N steps to let keypoints converge)
-            self.step_count += 1
-            warmup_steps = int(self.hyp.get("height_warmup_epochs", 30) * max(1, fg_mask.shape[0]))
-            if self.step_count > warmup_steps:
+            # Height score loss with epoch-based warmup and cosine ramp-up
+            warmup_epochs = self.hyp.get("height_warmup_epochs", 30)
+            ramp_epochs = self.hyp.get("height_ramp_epochs", 20)
+            if self.current_epoch >= warmup_epochs:
                 selected_keypoints = self._select_target_keypoints(
                     keypoints, batch["batch_idx"].view(-1, 1), target_gt_idx, fg_mask
                 )
@@ -840,7 +840,15 @@ class PlantHeightLoss(v8PoseLoss):
 
                 score_pred = self.compute_height_score(pred_kpt) / 100
                 score_gt = self.compute_height_score(gt_kpt).detach() / 100
-                loss[5] = torch.nan_to_num(F.smooth_l1_loss(score_pred, score_gt), nan=0.0)
+                raw_loss = torch.nan_to_num(F.smooth_l1_loss(score_pred, score_gt), nan=0.0)
+
+                # Cosine ramp-up: gradually increase from 0 to 1 over ramp_epochs
+                if ramp_epochs > 0:
+                    progress = min(1.0, (self.current_epoch - warmup_epochs) / ramp_epochs)
+                    ramp_factor = 0.5 * (1 - math.cos(math.pi * progress))
+                else:
+                    ramp_factor = 1.0
+                loss[5] = raw_loss * ramp_factor
 
         loss[1] *= self.hyp.pose
         loss[2] *= self.hyp.kobj

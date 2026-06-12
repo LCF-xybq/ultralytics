@@ -11,12 +11,14 @@ model = YOLO(osp.join(current_file_dir, "yolov8_m_height_loss.yaml"))
 
 results = model.train(
     data=data_cfg,
-    epochs=200,
+    epochs=400,
     imgsz=640,
     batch=16,
     name="yolov8_height_loss",
     lr0=0.01,
     lrf=0.01,
     project=workspace,
-    height=10.0,
+    height=2.0,
+    height_warmup_epochs=50,
+    height_ramp_epochs=30,
 )
