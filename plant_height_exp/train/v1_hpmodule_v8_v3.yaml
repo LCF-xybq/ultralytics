@@ -1,0 +1,61 @@
+nc: 1
+names: ['ruler']
+
+nkpt: 4
+kpt_shape: [4, 3]
+kpt_names: ['up_left', 'up_right', 'down_left', 'tip']
+
+skeleton:
+  - [0, 1]
+  - [0, 2]
+  - [2, 3]
+  - [1, 3]
+
+scales:
+  s: [0.50, 0.50, 1024]
+  # m: [0.50, 1.00, 512]
+
+# YOLOv8 backbone + HPModule v3
+# Key changes from v1 (original):
+#   1. Removed HPModule from position 0 (raw RGB) - destroys color info before any feature extraction
+#   2. HPModule has residual connection (c + fuse_conv(...)) - original features preserved
+#   3. alpha init lowered from 0.25 to 0.1 - gentler high-pass
+#   4. Kept HPModule BEFORE C2f (suppress low-freq background before feature extraction)
+#   5. Kept HPModule in neck (enhance edge precision for keypoint localization)
+backbone:
+  # [from, repeats, module, args]
+  - [-1, 1, Conv, [64, 3, 2]]               # 0-P1/2
+  - [-1, 1, Conv, [128, 3, 2]]              # 1-P2/4
+  - [-1, 3, C2f, [128, True]]               # 2
+  - [-1, 1, Conv, [256, 3, 2]]              # 3-P3/8
+  - [-1, 1, HPModule, [128, 3]]             # 4 filter low-freq bg before C2f @ P3
+  - [-1, 6, C2f, [256, True]]               # 5
+  - [-1, 1, Conv, [512, 3, 2]]              # 6-P4/16
+  - [-1, 1, HPModule, [256, 3]]             # 7 filter low-freq bg before C2f @ P4
+  - [-1, 6, C2f, [512, True]]               # 8
+  - [-1, 1, Conv, [1024, 3, 2]]             # 9-P5/32
+  - [-1, 3, C2f, [1024, True]]              # 10
+  - [-1, 1, HPModule, [512, 3]]             # 11 filter low-freq bg before SPPF @ P5
+  - [-1, 1, SPPF, [1024, 5]]                # 12
+
+# YOLOv8 head
+head:
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]  # 13
+  - [[-1, 8], 1, Concat, [1]]               # 14 cat from C2f P4
+  - [-1, 1, HPModule, [256, 3]]             # 15 enhance edge detail for keypoint precision
+  - [-1, 3, C2f, [512]]                     # 16
+
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]  # 17
+  - [[-1, 5], 1, Concat, [1]]               # 18 cat from C2f P3
+  - [-1, 1, HPModule, [128, 3]]             # 19 enhance edge detail for keypoint precision
+  - [-1, 3, C2f, [256]]                     # 20
+
+  - [-1, 1, Conv, [256, 3, 2]]              # 21
+  - [[-1, 16], 1, Concat, [1]]              # 22
+  - [-1, 3, C2f, [512]]                     # 23
+
+  - [-1, 1, Conv, [512, 3, 2]]              # 24
+  - [[-1, 12], 1, Concat, [1]]              # 25
+  - [-1, 3, C2f, [1024]]                    # 26
+
+  - [[20, 23, 26], 1, Pose, [nc, kpt_shape]]  # Pose(P3, P4, P5)

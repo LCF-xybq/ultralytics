@@ -797,6 +797,95 @@ class v8PoseLoss(v8DetectionLoss):
         return kpts_loss, kpts_obj_loss
 
 
+class PlantHeightLoss(v8PoseLoss):
+    """Criterion class for computing training losses with plant height score loss."""
+
+    def __init__(self, model: torch.nn.Module, tal_topk: int = 10, tal_topk2: int = 10):
+        super().__init__(model, tal_topk, tal_topk2)
+        self.step_count = 0
+
+    def loss(self, preds: dict[str, torch.Tensor], batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        pred_kpts = preds["kpts"].permute(0, 2, 1).contiguous()
+        loss = torch.zeros(6, device=self.device)  # box, kpt_location, kpt_visibility, cls, dfl, height
+        (fg_mask, target_gt_idx, target_bboxes, anchor_points, stride_tensor), det_loss, _ = (
+            self.get_assigned_targets_and_loss(preds, batch)
+        )
+        loss[0], loss[3], loss[4] = det_loss[0], det_loss[1], det_loss[2]
+
+        batch_size = pred_kpts.shape[0]
+        imgsz = torch.tensor(preds["feats"][0].shape[2:], device=self.device, dtype=pred_kpts.dtype) * self.stride[0]
+
+        pred_kpts = self.kpts_decode(anchor_points, pred_kpts.view(batch_size, -1, *self.kpt_shape))
+
+        if fg_mask.sum():
+            keypoints = batch["keypoints"].to(self.device).float().clone()
+            keypoints[..., 0] *= imgsz[1]
+            keypoints[..., 1] *= imgsz[0]
+
+            loss[1], loss[2] = self.calculate_keypoints_loss(
+                fg_mask, target_gt_idx, keypoints, batch["batch_idx"].view(-1, 1), stride_tensor, target_bboxes, pred_kpts
+            )
+
+            # Height score loss with warmup (skip for first N steps to let keypoints converge)
+            self.step_count += 1
+            warmup_steps = int(self.hyp.get("height_warmup_epochs", 30) * max(1, fg_mask.shape[0]))
+            if self.step_count > warmup_steps:
+                selected_keypoints = self._select_target_keypoints(
+                    keypoints, batch["batch_idx"].view(-1, 1), target_gt_idx, fg_mask
+                )
+                selected_keypoints[..., :2] /= stride_tensor.view(1, -1, 1, 1)
+
+                gt_kpt = selected_keypoints[fg_mask].float()
+                pred_kpt = pred_kpts[fg_mask].float()
+
+                score_pred = self.compute_height_score(pred_kpt) / 100
+                score_gt = self.compute_height_score(gt_kpt).detach() / 100
+                loss[5] = torch.nan_to_num(F.smooth_l1_loss(score_pred, score_gt), nan=0.0)
+
+        loss[1] *= self.hyp.pose
+        loss[2] *= self.hyp.kobj
+        loss[5] *= self.hyp.get("height", 5.0)
+
+        return loss * batch_size, loss.detach()
+
+    @staticmethod
+    def compute_height_score(kpts: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+        """Compute plant height score from 4 keypoints.
+
+        Keypoint order: 0=up_left(A), 1=up_right(B), 2=down_left(C), 3=tip(D).
+        score = 100 - 5 * L / d_AC, where L is distance from cross point to D.
+
+        Args:
+            kpts: (..., 4, 2+) keypoint coordinates (only x,y used).
+            eps: Small value for numerical stability.
+
+        Returns:
+            (...,) height score tensor.
+        """
+        x1, y1 = kpts[..., 0, 0], kpts[..., 0, 1]  # A: up_left
+        x2, y2 = kpts[..., 1, 0], kpts[..., 1, 1]  # B: up_right
+        x3, y3 = kpts[..., 2, 0], kpts[..., 2, 1]  # C: down_left
+        x4, y4 = kpts[..., 3, 0], kpts[..., 3, 1]  # D: tip
+
+        dx_ac = x3 - x1
+        k = (y3 - y1) / (dx_ac + eps * torch.sign(dx_ac + eps))
+        k1 = (y2 - y1) / (x2 - x1 + eps * torch.sign(x2 - x1 + eps))
+
+        # Cross point: intersection of line through D (slope k) and line AB (slope k1)
+        x_cross = (k * x4 - y4 - k1 * x1 + y1) / (k - k1 + eps * torch.sign(k - k1 + eps))
+
+        # Handle vertical AC case: when |dx_ac| < eps, x_cross = x4
+        vertical_mask = dx_ac.abs() < eps
+        x_cross = torch.where(vertical_mask, x4, x_cross)
+        y_cross = torch.where(vertical_mask, k1 * (x4 - x1) + y1, k * (x_cross - x4) + y4)
+
+        L = ((x_cross - x4) ** 2 + (y_cross - y4) ** 2).sqrt().clamp(min=1.0)
+        d_AC = ((x3 - x1) ** 2 + (y3 - y1) ** 2).sqrt().clamp(min=1.0)
+        score = (100 - 5 * L / (d_AC + eps)).clamp(0, 100)
+
+        return score
+
+
 class PoseLoss26(v8PoseLoss):
     """Criterion class for computing training losses for YOLOv8 pose estimation with RLE loss support."""
 

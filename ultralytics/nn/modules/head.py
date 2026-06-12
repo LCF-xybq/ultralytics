@@ -663,6 +663,12 @@ class Pose(Detect):
             return y
 
 
+class PlantHeightPose(Pose):
+    """YOLO Pose head for plant height estimation with 4 keypoints."""
+
+    pass
+
+
 class Pose26(Pose):
     """YOLO26 Pose head for keypoints models.
 
