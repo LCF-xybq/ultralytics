@@ -1,0 +1,64 @@
+nc: 1
+names: ['ruler']
+
+nkpt: 4
+kpt_shape: [4, 3]
+kpt_names: ['up_left', 'up_right', 'down_left', 'tip']
+
+skeleton:
+  - [0, 1]
+  - [0, 2]
+  - [2, 3]
+  - [1, 3]
+
+scales:
+  # s: [0.50, 0.50, 1024]
+  m: [0.50, 1.00, 512]
+
+# YOLOv8 backbone + HPModule v4
+# Based on v3, with HPModule implementation bugs fixed (see block.py:HPModule):
+#   1. _high_pass_filter now uses standard sharpening x + alpha*laplacian
+#      (v1/v3 used (1-alpha)*x + alpha*laplacian which attenuated the signal)
+#   2. Fusion uses multiplicative attention c*u_cp*u_sp instead of c*u_cp+c*u_sp
+#      (v1/v3 summed two [0,1] masks, causing activation scale drift up to 2c)
+#   3. Channel path replaced with CBAM-style shared MLP on 1x1 avg+max pool
+#      (v1/v3 pooled to 16x16 then sum, which was equivalent to 256x scaling
+#      with no extra spatial information)
+# Head uses PlantHeightPose so height_mae=True saves best_height_mae.pt.
+backbone:
+  # [from, repeats, module, args]
+  - [-1, 1, Conv, [64, 3, 2]]               # 0-P1/2
+  - [-1, 1, Conv, [128, 3, 2]]              # 1-P2/4
+  - [-1, 3, C2f, [128, True]]               # 2
+  - [-1, 1, Conv, [256, 3, 2]]              # 3-P3/8
+  - [-1, 1, HPModule, [128, 3]]             # 4 filter low-freq bg before C2f @ P3
+  - [-1, 6, C2f, [256, True]]               # 5
+  - [-1, 1, Conv, [512, 3, 2]]              # 6-P4/16
+  - [-1, 1, HPModule, [256, 3]]             # 7 filter low-freq bg before C2f @ P4
+  - [-1, 6, C2f, [512, True]]               # 8
+  - [-1, 1, Conv, [1024, 3, 2]]             # 9-P5/32
+  - [-1, 3, C2f, [1024, True]]              # 10
+  - [-1, 1, HPModule, [512, 3]]             # 11 filter low-freq bg before SPPF @ P5
+  - [-1, 1, SPPF, [1024, 5]]                # 12
+
+# YOLOv8 head
+head:
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]  # 13
+  - [[-1, 8], 1, Concat, [1]]               # 14 cat from C2f P4
+  - [-1, 1, HPModule, [256, 3]]             # 15 enhance edge detail for keypoint precision
+  - [-1, 3, C2f, [512]]                     # 16
+
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]  # 17
+  - [[-1, 5], 1, Concat, [1]]               # 18 cat from C2f P3
+  - [-1, 1, HPModule, [128, 3]]             # 19 enhance edge detail for keypoint precision
+  - [-1, 3, C2f, [256]]                     # 20
+
+  - [-1, 1, Conv, [256, 3, 2]]              # 21
+  - [[-1, 16], 1, Concat, [1]]              # 22
+  - [-1, 3, C2f, [512]]                     # 23
+
+  - [-1, 1, Conv, [512, 3, 2]]              # 24
+  - [[-1, 12], 1, Concat, [1]]              # 25
+  - [-1, 3, C2f, [1024]]                    # 26
+
+  - [[20, 23, 26], 1, PlantHeightPose, [nc, kpt_shape]]  # PlantHeightPose(P3, P4, P5)

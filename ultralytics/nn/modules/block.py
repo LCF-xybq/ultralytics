@@ -2099,14 +2099,15 @@ class HPModule(nn.Module):
         # Input projection
         self.input_proj = Conv(c1, c2, 1)
 
-        # --- Channel Path (CP) ---
-        pool_size = min(16, max(1, min(c2, 16)))
-        self.gap = nn.AdaptiveAvgPool2d(pool_size)
-        self.gmp = nn.AdaptiveMaxPool2d(pool_size)
-        groups = max(1, c2 // 4)
-        self.cp_conv1 = nn.Conv2d(c2, c2, 1, groups=groups)
-        self.cp_conv2 = nn.Conv2d(c2, c2, 1, groups=groups)
-        self.cp_fc = nn.Conv2d(c2 * 2, c2, 1, groups=groups)
+        # --- Channel Path (CBAM-style shared MLP over avg+max pool) ---
+        mid = max(c2 // 4, 16)
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        self.gmp = nn.AdaptiveMaxPool2d(1)
+        self.shared_mlp = nn.Sequential(
+            nn.Conv2d(c2, mid, 1, bias=False),
+            nn.SiLU(),
+            nn.Conv2d(mid, c2, 1, bias=False),
+        )
 
         # --- Spatial Path (SP) ---
         self.sp_conv = nn.Conv2d(c2, 1, 1)
@@ -2120,40 +2121,27 @@ class HPModule(nn.Module):
         )
 
     def _high_pass_filter(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply learnable high-pass convolution to extract high-frequency features."""
-        # Learnable Laplacian-style kernel: identity + alpha * laplacian
-        # alpha controls high-pass strength (clamped to [0, 1])
+        """Apply learnable Laplacian sharpening to amplify high-frequency detail."""
+        # Standard sharpening: x + alpha * laplacian(x). Preserves the original
+        # signal while adding high-pass response — alpha in [0, 1] controls strength.
         alpha = self.alpha.clamp(0.0, 1.0)
-        identity = x
         laplacian = x - 0.25 * (
             F.pad(x[:, :, :-1, :], [0, 0, 1, 0])
             + F.pad(x[:, :, 1:, :], [0, 0, 0, 1])
             + F.pad(x[:, :, :, :-1], [1, 0, 0, 0])
             + F.pad(x[:, :, :, 1:], [0, 1, 0, 0])
         )
-        return identity + alpha * (laplacian - identity)
+        return x + alpha * laplacian
 
     def _channel_path(self, f: torch.Tensor) -> torch.Tensor:
-        """Channel attention computed on high-frequency features."""
-        # Pool to k x k instead of 1 x 1 to preserve spatial detail
-        f_gap = self.gap(f).sum(dim=(2, 3))  # (B, C)
-        f_gmp = self.gmp(f).sum(dim=(2, 3))  # (B, C)
-
-        # Apply ReLU to keep positive responses
-        f_gap = F.relu(f_gap).unsqueeze(-1).unsqueeze(-1)  # (B, C, 1, 1)
-        f_gmp = F.relu(f_gmp).unsqueeze(-1).unsqueeze(-1)
-
-        s_gap = self.cp_conv1(f_gap).squeeze(-1).squeeze(-1)  # (B, C)
-        s_gmp = self.cp_conv2(f_gmp).squeeze(-1).squeeze(-1)
-
-        s = torch.cat([s_gap, s_gmp], dim=1).unsqueeze(-1).unsqueeze(-1)  # (B, 2C, 1, 1)
-        u_cp = torch.sigmoid(self.cp_fc(s))  # (B, C, 1, 1)
-        return u_cp
+        """Channel attention from avg+max pooled high-frequency response."""
+        avg = self.gap(f)
+        mx = self.gmp(f)
+        return torch.sigmoid(self.shared_mlp(avg) + self.shared_mlp(mx))
 
     def _spatial_path(self, f: torch.Tensor) -> torch.Tensor:
         """Spatial attention mask from high-frequency features."""
-        u_sp = torch.sigmoid(self.sp_conv(f))  # (B, 1, H, W)
-        return u_sp
+        return torch.sigmoid(self.sp_conv(f))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         c = self.input_proj(x)  # (B, C2, H, W)
@@ -2161,12 +2149,12 @@ class HPModule(nn.Module):
         # High-frequency response
         f = self._high_pass_filter(c)
 
-        # Channel & spatial attention
+        # Channel & spatial attention (multiplicative so activations stay bounded in [0, c])
         u_cp = self._channel_path(f)  # (B, C2, 1, 1)
         u_sp = self._spatial_path(f)  # (B, 1, H, W)
 
-        # Fuse: broadcast multiply then sum, refine with conv, then residual add
-        out = c * u_cp + c * u_sp
+        # Fuse: serial attention multiply, refine with conv, then residual add
+        out = c * u_cp * u_sp
         return c + self.fuse_conv(out)
 
 
