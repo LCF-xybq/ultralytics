@@ -53,4 +53,4 @@ head:
   - [[-1, 13], 1, Concat, [1]] # 26
   - [-1, 3, C2f, [1024]] # 27
 
-  - [[21, 24, 27], 1, Pose, [nc, kpt_shape]] # Pose(P3, P4, P5)
+  - [[21, 24, 27], 1, PlantHeightPose, [nc, kpt_shape]] # PlantHeightPose(P3, P4, P5)

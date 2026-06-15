@@ -57,7 +57,6 @@ class PoseTrainer(yolo.detect.DetectionTrainer):
         self.add_callback("on_train_epoch_start", self._set_criterion_epoch)
         if self.args.height_mae:
             self.best_height_mae = None
-            self.add_callback("on_val_end", self._update_best_height_mae)
             self.add_callback("on_model_save", self._save_best_height_mae)
 
     def _set_criterion_epoch(self, trainer):
@@ -67,24 +66,35 @@ class PoseTrainer(yolo.detect.DetectionTrainer):
         if criterion is not None and hasattr(criterion, "current_epoch"):
             criterion.current_epoch = trainer.epoch
 
-    def _update_best_height_mae(self, trainer):
-        """Track best height_mae from validation metrics."""
-        if not isinstance(unwrap_model(trainer.model).model[-1], PlantHeightPose):
+    def _update_best_height_mae(self, metrics: dict[str, Any]) -> None:
+        """Track best height_mae from validation metrics and set save flag."""
+        if not isinstance(unwrap_model(self.model).model[-1], PlantHeightPose):
+            self._save_height_mae_ckpt = False
             return
-        # Resume: recover best_height_mae from saved file
-        if trainer.best_height_mae is None:
-            meta_path = trainer.wdir / "best_height_mae.json"
+        # Resume: recover best_height_mae from saved file (ignore invalid 0 / negative values)
+        if self.best_height_mae is None:
+            meta_path = self.wdir / "best_height_mae.json"
             if meta_path.exists():
                 import json
 
                 with open(meta_path) as f:
-                    trainer.best_height_mae = json.load(f).get("best_height_mae", float("inf"))
-        height_mae = trainer.metrics.get("height_mae")
-        if height_mae is not None and (trainer.best_height_mae is None or height_mae < trainer.best_height_mae):
-            trainer.best_height_mae = height_mae
-            trainer._save_height_mae_ckpt = True
+                    saved = json.load(f).get("best_height_mae", float("inf"))
+                self.best_height_mae = saved if saved > 0 else float("inf")
+        height_mae = metrics.get("height_mae")
+        if height_mae is not None and height_mae > 0 and (
+            self.best_height_mae is None or height_mae < self.best_height_mae
+        ):
+            self.best_height_mae = height_mae
+            self._save_height_mae_ckpt = True
         else:
-            trainer._save_height_mae_ckpt = False
+            self._save_height_mae_ckpt = False
+
+    def validate(self):
+        """Run validation and update best_height_mae tracking when enabled."""
+        metrics, fitness = super().validate()
+        if metrics is not None and self.args.height_mae:
+            self._update_best_height_mae(metrics)
+        return metrics, fitness
 
     def _save_best_height_mae(self, trainer):
         """Copy last.pt to best_height_mae.pt when height_mae improved."""

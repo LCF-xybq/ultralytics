@@ -9,7 +9,7 @@ import numpy as np
 import torch
 
 from ultralytics.models.yolo.detect import DetectionValidator
-from ultralytics.utils import ops
+from ultralytics.utils import LOGGER, ops
 from ultralytics.utils.loss import PlantHeightLoss
 from ultralytics.utils.metrics import OKS_SIGMA, PoseMetrics, kpt_iou
 
@@ -71,6 +71,7 @@ class PoseValidator(DetectionValidator):
         self.args.task = "pose"
         self.metrics = PoseMetrics()
         self.height_mae_scores = []
+        self.height_mae = None
 
     def preprocess(self, batch: dict[str, Any]) -> dict[str, Any]:
         """Preprocess batch by converting keypoints data to float and moving it to the device."""
@@ -80,7 +81,7 @@ class PoseValidator(DetectionValidator):
 
     def get_desc(self) -> str:
         """Return description of evaluation metrics in string format."""
-        return ("%22s" + "%11s" * 10) % (
+        desc = ("%22s" + "%11s" * 10) % (
             "Class",
             "Images",
             "Instances",
@@ -93,6 +94,9 @@ class PoseValidator(DetectionValidator):
             "mAP50",
             "mAP50-95)",
         )
+        if self.args.height_mae:
+            desc += "%11s" % "h_MAE"
+        return desc
 
     def init_metrics(self, model: torch.nn.Module) -> None:
         """Initialize evaluation metrics for YOLO pose validation.
@@ -224,11 +228,36 @@ class PoseValidator(DetectionValidator):
             if self.height_mae_scores:
                 pred_scores = [s[0] for s in self.height_mae_scores]
                 gt_scores = [s[1] for s in self.height_mae_scores]
-                stats["height_mae"] = float(np.mean([abs(p - g) for p, g in zip(pred_scores, gt_scores)]))
+                self.height_mae = float(np.mean([abs(p - g) for p, g in zip(pred_scores, gt_scores)]))
             else:
-                stats["height_mae"] = 0.0
+                self.height_mae = 0.0
+            stats["height_mae"] = self.height_mae
             self.height_mae_scores = []
         return stats
+
+    def print_results(self) -> None:
+        """Print validation results per class, appending a height_mae column when enabled."""
+        if not (self.args.height_mae and self.height_mae is not None):
+            super().print_results()
+            return
+        pf = "%22s" + "%11i" * 2 + "%11.3g" * len(self.metrics.keys) + "%11.4g"
+        LOGGER.info(
+            pf % ("all", self.seen, self.metrics.nt_per_class.sum(), *self.metrics.mean_results(), self.height_mae)
+        )
+        if self.metrics.nt_per_class.sum() == 0:
+            LOGGER.warning(f"no labels found in {self.args.task} set, cannot compute metrics without labels")
+        if self.args.verbose and not self.training and self.nc > 1:
+            for i, c in enumerate(self.metrics.ap_class_index):
+                LOGGER.info(
+                    pf
+                    % (
+                        self.names[c],
+                        self.metrics.nt_per_image[c],
+                        self.metrics.nt_per_class[c],
+                        *self.metrics.class_result(i),
+                        self.height_mae,
+                    )
+                )
 
     def save_one_txt(self, predn: dict[str, torch.Tensor], save_conf: bool, shape: tuple[int, int], file: Path) -> None:
         """Save YOLO pose detections to a text file in normalized coordinates.
