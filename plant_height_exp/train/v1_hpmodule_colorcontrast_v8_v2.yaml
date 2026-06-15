@@ -1,0 +1,72 @@
+nc: 1
+names: ['ruler']
+
+nkpt: 4
+kpt_shape: [4, 3]
+kpt_names: ['up_left', 'up_right', 'down_left', 'tip']
+
+skeleton:
+  - [0, 1]
+  - [0, 2]
+  - [2, 3]
+  - [1, 3]
+
+scales:
+  # s: [0.50, 0.50, 1024]
+  m: [0.50, 1.00, 512]
+
+# YOLOv8 backbone + HPModule + ColorContrastAttention (v2: scale-separated)
+#
+# Diagnosis of v1 (combined) regression:
+#   v1 placed HP and CC together at P3 (layer 4 HP + layer 6 CC), causing both
+#   modules to amplify the same ruler signal at the same scale. Result: P3 features
+#   over-focused on ruler, lost background context for other keypoints.
+#   Combined (3.7031) ended up worse than HP-only (3.6131).
+#
+# v2 fix: keep the HP-only backbone (ab_v1_hpmodule_v8) UNCHANGED, only add 2 CC
+# at scales where HP is weak (P4/P5 backbone — frequency-domain filtering loses
+# meaning at 16x/32x downsampling, but semantic contrast still helps).
+#
+# Module placement (HP positions identical to ab_v1_hpmodule_v8):
+#   - HP: backbone P3 (before C2f), neck P3, neck P4
+#   - CC: backbone P4, backbone P5 (after C2f)  ← only additions vs ab
+# No HP at P4/P5 backbone (frequency domain meaningless at those scales).
+# No CC at P3 (would conflict with HP).
+# Head uses PlantHeightPose so height_mae=True saves best_height_mae.pt.
+backbone:
+  # [from, repeats, module, args]
+  - [-1, 1, Conv, [64, 3, 2]]               # 0-P1/2
+  - [-1, 1, Conv, [128, 3, 2]]              # 1-P2/4
+  - [-1, 3, C2f, [128, True]]               # 2
+  - [-1, 1, Conv, [256, 3, 2]]              # 3-P3/8
+  - [-1, 1, HPModule, [128, 3]]             # 4 HP @ P3 (suppress bg low-freq before C2f)
+  - [-1, 6, C2f, [256, True]]               # 5 (neck P3 skip source)
+  - [-1, 1, Conv, [512, 3, 2]]              # 6-P4/16
+  - [-1, 6, C2f, [512, True]]               # 7 (neck P4 skip source — raw, NOT CC output)
+  - [-1, 1, ColorContrastAttention, [512]]  # 8 CC @ P4 (NEW: semantic contrast at deep scale)
+  - [-1, 1, Conv, [1024, 3, 2]]             # 9-P5/32
+  - [-1, 3, C2f, [1024, True]]              # 10
+  - [-1, 1, ColorContrastAttention, [1024]] # 11 CC @ P5 (NEW: semantic contrast at deep scale)
+  - [-1, 1, SPPF, [1024, 5]]                # 12
+
+# YOLOv8 head
+head:
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]  # 13
+  - [[-1, 7], 1, Concat, [1]]               # 14 cat from C2f P4 (raw, bypasses CC for clean skip)
+  - [-1, 1, HPModule, [256, 3]]             # 15 HP @ neck P4 (refine keypoint edges)
+  - [-1, 3, C2f, [512]]                     # 16
+
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]  # 17
+  - [[-1, 5], 1, Concat, [1]]               # 18 cat from C2f P3 (HP-enhanced)
+  - [-1, 1, HPModule, [128, 3]]             # 19 HP @ neck P3 (tip precision)
+  - [-1, 3, C2f, [256]]                     # 20
+
+  - [-1, 1, Conv, [256, 3, 2]]              # 21
+  - [[-1, 16], 1, Concat, [1]]              # 22
+  - [-1, 3, C2f, [512]]                     # 23
+
+  - [-1, 1, Conv, [512, 3, 2]]              # 24
+  - [[-1, 12], 1, Concat, [1]]              # 25
+  - [-1, 3, C2f, [1024]]                    # 26
+
+  - [[20, 23, 26], 1, PlantHeightPose, [nc, kpt_shape]]  # PlantHeightPose(P3, P4, P5)
