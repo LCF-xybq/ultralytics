@@ -375,7 +375,10 @@ def _extract_ruler_one(task: tuple[str, str, str, str, bool]):
     if "shapes" not in labels:
         return False, img_name, "missing shapes"
 
-    x_min, y_min, x_max, y_max = compute_ruler_bbox(labels["shapes"], target_label="ruler")
+    try:
+        x_min, y_min, x_max, y_max = compute_ruler_bbox(labels["shapes"], target_label="ruler")
+    except ValueError:
+        return False, img_name, "ruler not found in shapes"
 
     image = cv2.imread(osp.join(img_dir, img_name), cv2.IMREAD_COLOR)
     if image is None:

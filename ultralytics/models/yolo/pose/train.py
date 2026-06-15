@@ -8,7 +8,7 @@ from typing import Any
 
 from ultralytics.models import yolo
 from ultralytics.nn.tasks import PlantHeightPose, PoseModel
-from ultralytics.utils import DEFAULT_CFG, RANK
+from ultralytics.utils import DEFAULT_CFG, LOGGER, RANK
 from ultralytics.utils.torch_utils import unwrap_model
 
 
@@ -55,6 +55,10 @@ class PoseTrainer(yolo.detect.DetectionTrainer):
         overrides["task"] = "pose"
         super().__init__(cfg, overrides, _callbacks)
         self.add_callback("on_train_epoch_start", self._set_criterion_epoch)
+        if self.args.height_mae:
+            self.best_height_mae = None
+            self.add_callback("on_val_end", self._update_best_height_mae)
+            self.add_callback("on_model_save", self._save_best_height_mae)
 
     def _set_criterion_epoch(self, trainer):
         """Pass current epoch to the criterion for epoch-based warmup scheduling."""
@@ -62,6 +66,39 @@ class PoseTrainer(yolo.detect.DetectionTrainer):
         criterion = getattr(model, "criterion", None)
         if criterion is not None and hasattr(criterion, "current_epoch"):
             criterion.current_epoch = trainer.epoch
+
+    def _update_best_height_mae(self, trainer):
+        """Track best height_mae from validation metrics."""
+        if not isinstance(unwrap_model(trainer.model).model[-1], PlantHeightPose):
+            return
+        # Resume: recover best_height_mae from saved file
+        if trainer.best_height_mae is None:
+            meta_path = trainer.wdir / "best_height_mae.json"
+            if meta_path.exists():
+                import json
+
+                with open(meta_path) as f:
+                    trainer.best_height_mae = json.load(f).get("best_height_mae", float("inf"))
+        height_mae = trainer.metrics.get("height_mae")
+        if height_mae is not None and (trainer.best_height_mae is None or height_mae < trainer.best_height_mae):
+            trainer.best_height_mae = height_mae
+            trainer._save_height_mae_ckpt = True
+        else:
+            trainer._save_height_mae_ckpt = False
+
+    def _save_best_height_mae(self, trainer):
+        """Copy last.pt to best_height_mae.pt when height_mae improved."""
+        if not getattr(trainer, "_save_height_mae_ckpt", False):
+            return
+        if RANK in {-1, 0} and trainer.last.exists():
+            import json
+
+            best_path = trainer.wdir / "best_height_mae.pt"
+            best_path.write_bytes(trainer.last.read_bytes())
+            meta_path = trainer.wdir / "best_height_mae.json"
+            with open(meta_path, "w") as f:
+                json.dump({"best_height_mae": trainer.best_height_mae}, f)
+            LOGGER.info(f"Saving best_height_mae.pt (height_mae={trainer.best_height_mae:.5f})")
 
     def get_model(
         self,

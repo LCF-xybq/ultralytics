@@ -10,6 +10,7 @@ import torch
 
 from ultralytics.models.yolo.detect import DetectionValidator
 from ultralytics.utils import ops
+from ultralytics.utils.loss import PlantHeightLoss
 from ultralytics.utils.metrics import OKS_SIGMA, PoseMetrics, kpt_iou
 
 
@@ -69,6 +70,7 @@ class PoseValidator(DetectionValidator):
         self.kpt_shape = None
         self.args.task = "pose"
         self.metrics = PoseMetrics()
+        self.height_mae_scores = []
 
     def preprocess(self, batch: dict[str, Any]) -> dict[str, Any]:
         """Preprocess batch by converting keypoints data to float and moving it to the device."""
@@ -182,6 +184,31 @@ class PoseValidator(DetectionValidator):
             area = ops.xyxy2xywh(batch["bboxes"])[:, 2:].prod(1) * 0.53
             iou = kpt_iou(batch["keypoints"], preds["keypoints"], sigma=self.sigma, area=area)
             tp_p = self.match_predictions(preds["cls"], gt_cls, iou).cpu().numpy()
+
+            # Collect height score pairs for height_mae computation
+            if self.args.height_mae and self.kpt_shape is not None and self.kpt_shape[0] == 4:
+                correct_class = gt_cls[:, None] == preds["cls"]
+                iou_np = (iou * correct_class).cpu().numpy()
+                matches = np.nonzero(iou_np >= 0.5)
+                matches = np.array(matches).T
+                if matches.shape[0]:
+                    if matches.shape[0] > 1:
+                        matches = matches[iou_np[matches[:, 0], matches[:, 1]].argsort()[::-1]]
+                        matches = matches[np.unique(matches[:, 0], return_index=True)[1]]
+                        matches = matches[np.unique(matches[:, 1], return_index=True)[1]]
+                    gt_kpts = batch["keypoints"].cpu().float()
+                    pred_kpts = preds["keypoints"].cpu().float()
+                    for gt_idx, pred_idx in matches:
+                        self.height_mae_scores.append(
+                            (
+                                PlantHeightLoss.compute_height_score(
+                                    pred_kpts[pred_idx : pred_idx + 1]
+                                ).item(),
+                                PlantHeightLoss.compute_height_score(
+                                    gt_kpts[gt_idx : gt_idx + 1]
+                                ).item(),
+                            )
+                        )
         tp.update({"tp_p": tp_p})  # update tp with kpts IoU
         return tp
 
@@ -189,6 +216,19 @@ class PoseValidator(DetectionValidator):
         """Gather stats from all GPUs."""
         super().gather_stats()  # gather stats from DetectionValidator
         self._gather_image_metrics(self.metrics.pose)
+
+    def get_stats(self) -> dict[str, Any]:
+        """Calculate and return metrics statistics including height_mae."""
+        stats = super().get_stats()
+        if self.args.height_mae:
+            if self.height_mae_scores:
+                pred_scores = [s[0] for s in self.height_mae_scores]
+                gt_scores = [s[1] for s in self.height_mae_scores]
+                stats["height_mae"] = float(np.mean([abs(p - g) for p, g in zip(pred_scores, gt_scores)]))
+            else:
+                stats["height_mae"] = 0.0
+            self.height_mae_scores = []
+        return stats
 
     def save_one_txt(self, predn: dict[str, torch.Tensor], save_conf: bool, shape: tuple[int, int], file: Path) -> None:
         """Save YOLO pose detections to a text file in normalized coordinates.

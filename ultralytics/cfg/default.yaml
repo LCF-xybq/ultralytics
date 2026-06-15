@@ -109,6 +109,7 @@ rle: 1.0 # (float) rle loss gain (pose tasks)
 height: 5.0 # (float) plant height score loss gain (pose tasks, score normalized to [0,1])
 height_warmup_epochs: 30 # (int) epochs to wait before enabling height loss
 height_ramp_epochs: 20 # (int) epochs to gradually ramp up height loss from 0 to full after warmup
+height_mae: False # (bool) enable height_mae metric and save best_height_mae.pt (pose tasks)
 angle: 1.0 # (float) oriented angle loss gain (obb tasks)
 nbs: 64 # (int) nominal batch size used for loss normalization
 hsv_h: 0.015 # (float) HSV hue augmentation fraction

@@ -11,11 +11,9 @@ model = YOLO("yolov8_m.yaml")
 
 results = model.train(
     data=data_cfg,
-    epochs=200,
+    epochs=50,
     imgsz=640,
     batch=16,
     name="plant_height_yolov8",
-    lr0=0.01,
-    lrf=0.01,
     project=workspace,
 )

@@ -17,5 +17,6 @@ results = model.train(
     name="v1_hpmodule_v8",
     lr0=0.01,
     lrf=0.01,
-    project=workspace
+    project=workspace,
+    height_mae=True
 )
