@@ -2191,9 +2191,12 @@ class ColorContrastAttention(nn.Module):
             DWConv(c2, c2, 3, d=4),
         )
 
-        # Fuse local and surround difference into spatial attention map
+        # Fuse local, surround, and their explicit difference into spatial attention.
+        # v1 only concat'd local+surround and relied on a 1x1 MLP to implicitly learn
+        # the subtraction — providing diff directly makes the contrast signal learnable
+        # from random init.
         self.spatial_gate = nn.Sequential(
-            Conv(c2 * 2, mid, 1),
+            Conv(c2 * 3, mid, 1),
             Conv(mid, 1, 1, act=False),
             nn.Sigmoid(),
         )
@@ -2211,10 +2214,13 @@ class ColorContrastAttention(nn.Module):
         x = self.conv(x)
         local_feat = self.local_conv(x)
         surround_feat = self.surround_conv(x)
-        contrast = torch.cat([local_feat, surround_feat], dim=1)
+        diff = local_feat - surround_feat
+        contrast = torch.cat([local_feat, surround_feat, diff], dim=1)
         spatial_w = self.spatial_gate(contrast)
         channel_w = self.channel_gate(x)
-        return x * spatial_w * channel_w
+        # Residual form: attention amplifies, does not attenuate. v1 used
+        # x*spatial_w*channel_w which clipped activations to <=x (≈0.25x at init).
+        return x * (1 + spatial_w * channel_w)
 
 
 class TinyTargetAttention(nn.Module):
