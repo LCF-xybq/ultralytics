@@ -1,0 +1,53 @@
+nc: 1
+names: ['ruler']
+
+nkpt: 4
+kpt_shape: [4, 3]
+kpt_names: ['up_left', 'up_right', 'down_left', 'tip']
+
+skeleton:
+  - [0, 1]
+  - [0, 2]
+  - [2, 3]
+  - [1, 3]
+
+scales:
+  m: [0.50, 1.00, 512]
+
+# Ablation: HPModule only (2 HP, no CC) — YOLO11m variant.
+# Isolates HPModule contribution: HP at backbone P3 + neck P3, no CC anywhere.
+# HP set is the reduced "lower-impact" version (2 HP at P3 scales only).
+backbone:
+  # [from, repeats, module, args]
+  - [-1, 1, Conv, [64, 3, 2]]               # 0-P1/2
+  - [-1, 1, Conv, [128, 3, 2]]              # 1-P2/4
+  - [-1, 2, C3k2, [256, False, 0.25]]       # 2
+  - [-1, 1, Conv, [256, 3, 2]]              # 3-P3/8
+  - [-1, 1, HPModule, [128, 3]]             # 4 HP @ backbone P3
+  - [-1, 2, C3k2, [512, False, 0.25]]       # 5 (neck P3 skip source)
+  - [-1, 1, Conv, [512, 3, 2]]              # 6-P4/16
+  - [-1, 2, C3k2, [512, True]]              # 7 (neck P4 skip source)
+  - [-1, 1, Conv, [1024, 3, 2]]             # 8-P5/32
+  - [-1, 2, C3k2, [1024, True]]             # 9
+  - [-1, 1, SPPF, [1024, 5]]                # 10
+  - [-1, 2, C2PSA, [1024]]                  # 11
+
+head:
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]  # 12
+  - [[-1, 7], 1, Concat, [1]]               # 13 cat from C3k2 P4
+  - [-1, 2, C3k2, [512, False]]             # 14
+
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]  # 15
+  - [[-1, 5], 1, Concat, [1]]               # 16 cat from C3k2 P3 (HP-enhanced)
+  - [-1, 1, HPModule, [128, 3]]             # 17 HP @ neck P3
+  - [-1, 2, C3k2, [256, False]]             # 18
+
+  - [-1, 1, Conv, [256, 3, 2]]              # 19
+  - [[-1, 14], 1, Concat, [1]]              # 20
+  - [-1, 2, C3k2, [512, False]]             # 21
+
+  - [-1, 1, Conv, [512, 3, 2]]              # 22
+  - [[-1, 11], 1, Concat, [1]]              # 23
+  - [-1, 2, C3k2, [1024, True]]             # 24
+
+  - [[18, 21, 24], 1, PlantHeightPose, [nc, kpt_shape]]
