@@ -1,0 +1,59 @@
+nc: 1
+names: ['ruler']
+
+nkpt: 4
+kpt_shape: [4, 3]
+kpt_names: ['up_left', 'up_right', 'down_left', 'tip']
+
+skeleton:
+  - [0, 1]
+  - [0, 2]
+  - [2, 3]
+  - [1, 3]
+
+scales:
+  m: [0.50, 1.00, 512]
+
+# YOLO26m backbone + ColorContrastAttention + HPModule (port of ab_v1_colorcontrast_v8_v2.yaml)
+# Same placement as the v8 v2 mirror:
+#   - CC: backbone P3, P4, P5 (after C3k2)
+#   - HP: neck P3, neck P4
+# Uses Pose26 head to preserve YOLO26 normalizing flow. height_mae=True computes
+# height_MAE/RMSE/R2 in val but does NOT save best_height_mae.pt.
+backbone:
+  # [from, repeats, module, args]
+  - [-1, 1, Conv, [64, 3, 2]]               # 0-P1/2
+  - [-1, 1, Conv, [128, 3, 2]]              # 1-P2/4
+  - [-1, 2, C3k2, [256, False, 0.25]]       # 2
+  - [-1, 1, Conv, [256, 3, 2]]              # 3-P3/8
+  - [-1, 2, C3k2, [512, False, 0.25]]       # 4
+  - [-1, 1, ColorContrastAttention, [512]]  # 5 CC @ P3 (neck P3 skip source)
+  - [-1, 1, Conv, [512, 3, 2]]              # 6-P4/16
+  - [-1, 2, C3k2, [512, True]]              # 7 (neck P4 skip source — raw, bypasses CC)
+  - [-1, 1, ColorContrastAttention, [512]]  # 8 CC @ P4
+  - [-1, 1, Conv, [1024, 3, 2]]             # 9-P5/32
+  - [-1, 2, C3k2, [1024, True]]             # 10
+  - [-1, 1, ColorContrastAttention, [1024]] # 11 CC @ P5 (before SPPF)
+  - [-1, 1, SPPF, [1024, 5, 3, True]]       # 12
+  - [-1, 2, C2PSA, [1024]]                  # 13
+
+head:
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]  # 14
+  - [[-1, 7], 1, Concat, [1]]               # 15 cat from C3k2 P4 (raw, bypasses CC for clean skip)
+  - [-1, 1, HPModule, [256, 3]]             # 16 HP @ neck P4
+  - [-1, 2, C3k2, [512, True]]              # 17
+
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]  # 18
+  - [[-1, 5], 1, Concat, [1]]               # 19 cat from CC P3 (contrast-enhanced)
+  - [-1, 1, HPModule, [128, 3]]             # 20 HP @ neck P3
+  - [-1, 2, C3k2, [256, True]]              # 21
+
+  - [-1, 1, Conv, [256, 3, 2]]              # 22
+  - [[-1, 17], 1, Concat, [1]]              # 23
+  - [-1, 2, C3k2, [512, True]]              # 24
+
+  - [-1, 1, Conv, [512, 3, 2]]              # 25
+  - [[-1, 13], 1, Concat, [1]]              # 26
+  - [-1, 1, C3k2, [1024, True, 0.5, True]]  # 27
+
+  - [[21, 24, 27], 1, Pose26, [nc, kpt_shape]]  # Pose26(P3, P4, P5)
